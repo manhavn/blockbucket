@@ -7,6 +7,13 @@ pub trait Trait {
     fn get(&mut self, key: Vec<u8>) -> (Vec<u8>, Vec<u8>);
     fn delete(&mut self, key: Vec<u8>) -> std::io::Result<()>;
     fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> std::io::Result<()>;
+    fn list(&mut self, count: u8) -> Vec<(Vec<u8>, Vec<u8>)>;
+    fn find_next(
+        &mut self,
+        key: Vec<u8>,
+        count: u8,
+        only_after_key: bool,
+    ) -> Vec<(Vec<u8>, Vec<u8>)>;
 }
 
 pub struct Bucket {
@@ -111,6 +118,126 @@ fn convert_data_to_info(list_block_data: Vec<u8>) -> Vec<Block> {
                     if block_info.size_key > 0 {
                         block_info.size_data = digits_to_number(&tmp_group);
                         list_block_info.push(block_info.clone());
+                    }
+                    tmp_group.clear();
+                }
+                END => {
+                    break;
+                }
+                _ => {
+                    tmp_group.push(v);
+                }
+            }
+        }
+    }
+    list_block_info
+}
+
+fn convert_data_to_info_limit(list_block_data: Vec<u8>, count: u8) -> Vec<Block> {
+    let mut list_block_info: Vec<Block> = Vec::new();
+    {
+        let mut block_info = Block {
+            start: 0,
+            size_key: 0,
+            sum_key: 0,
+            size_data: 0,
+        };
+        let mut tmp_group: Vec<u8> = Vec::new();
+        let mut current: u8 = 0;
+        for v in list_block_data {
+            if current >= count {
+                break;
+            }
+            match v {
+                START => {
+                    block_info.start = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SIZE_KEY => {
+                    block_info.size_key = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SUM_KEY => {
+                    block_info.sum_key = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SIZE_DATA => {
+                    if block_info.size_key > 0 {
+                        block_info.size_data = digits_to_number(&tmp_group);
+                        list_block_info.push(block_info.clone());
+                        current += 1;
+                    }
+                    tmp_group.clear();
+                }
+                END => {
+                    break;
+                }
+                _ => {
+                    tmp_group.push(v);
+                }
+            }
+        }
+    }
+    list_block_info
+}
+
+fn convert_data_to_info_find_next(
+    file: &mut File,
+    list_block_data: Vec<u8>,
+    key: Vec<u8>,
+    count: u8,
+    only_after_key: bool,
+) -> Vec<Block> {
+    let mut list_block_info: Vec<Block> = Vec::new();
+    {
+        let mut block_info = Block {
+            start: 0,
+            size_key: 0,
+            sum_key: 0,
+            size_data: 0,
+        };
+        let mut tmp_group: Vec<u8> = Vec::new();
+        let mut current: u8 = 0;
+        let len_current_key = key.len();
+        let sum_current_key: u64 = key.iter().map(|&x| x as u64).sum();
+        let mut check_is_begin = false;
+        for v in list_block_data {
+            if current >= count {
+                break;
+            }
+            match v {
+                START => {
+                    block_info.start = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SIZE_KEY => {
+                    block_info.size_key = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SUM_KEY => {
+                    block_info.sum_key = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SIZE_DATA => {
+                    if block_info.size_key > 0 {
+                        block_info.size_data = digits_to_number(&tmp_group);
+                        if !check_is_begin
+                            && block_info.size_key == len_current_key
+                            && block_info.sum_key == sum_current_key as usize
+                        {
+                            if !file.seek(Start(block_info.start as u64)).is_err() {
+                                let mut found_key = vec![0u8; block_info.size_key];
+                                if !file.read_exact(&mut found_key).is_err() {
+                                    check_is_begin = found_key == key.clone();
+                                };
+                            }
+                        }
+                        if check_is_begin {
+                            if !only_after_key || current > 0 {
+                                list_block_info.push(block_info.clone());
+                            }
+                            current += 1;
+                        }
                     }
                     tmp_group.clear();
                 }
@@ -293,9 +420,10 @@ fn update_list_block(
     Ok(first_block_data)
 }
 
-fn get_block(file: &mut File, list_found: Vec<Block>) -> (Vec<u8>, Vec<u8>) {
-    let mut result = (Vec::new(), Vec::new());
+fn get_block(file: &mut File, list_found: Vec<Block>) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let mut result: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     for f in list_found {
+        let mut block = (Vec::new(), Vec::new());
         if file.seek(Start(f.start as u64)).is_err() {
             continue;
         };
@@ -310,8 +438,9 @@ fn get_block(file: &mut File, list_found: Vec<Block>) -> (Vec<u8>, Vec<u8>) {
         if file.read_exact(&mut found_value).is_err() {
             continue;
         };
-        result.0 = found_key;
-        result.1 = found_value;
+        block.0 = found_key;
+        block.1 = found_value;
+        result.push(block);
     }
     result
 }
@@ -385,8 +514,14 @@ impl Trait for Bucket {
         let (_, _, list_block_data) = get_end_data_size(&mut self.read);
         let list_block_info = convert_data_to_info(list_block_data);
         let list_found = get_block_info(&mut self.read, &list_block_info, &key);
-        let (key_block, value_block) = get_block(&mut self.read, list_found);
-        (key_block, value_block)
+        let list_block = get_block(&mut self.read, list_found);
+        let mut result: (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
+        for b in list_block {
+            result.0 = b.0;
+            result.1 = b.1;
+            break;
+        }
+        result
     }
 
     fn delete(&mut self, key: Vec<u8>) -> std::io::Result<()> {
@@ -419,6 +554,29 @@ impl Trait for Bucket {
         )?;
         Ok(())
     }
+
+    fn list(&mut self, count: u8) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let (_, _, list_block_data) = get_end_data_size(&mut self.read);
+        let list_block_info = convert_data_to_info_limit(list_block_data, count);
+        get_block(&mut self.read, list_block_info)
+    }
+
+    fn find_next(
+        &mut self,
+        key: Vec<u8>,
+        count: u8,
+        only_after_key: bool,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let (_, _, list_block_data) = get_end_data_size(&mut self.read);
+        let list_block_info = convert_data_to_info_find_next(
+            &mut self.read,
+            list_block_data,
+            key,
+            count,
+            only_after_key,
+        );
+        get_block(&mut self.read, list_block_info)
+    }
 }
 
 #[cfg(test)]
@@ -430,6 +588,8 @@ mod tests {
     fn test_all() {
         set_data();
         get_data();
+        list_data();
+        find_next_data();
         delete_data();
         delete_bucket();
     }
@@ -455,6 +615,29 @@ mod tests {
 
         assert_eq!(test_key, key_block);
         assert_eq!(test_value, value_block);
+    }
+
+    fn list_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path);
+
+        let count = 10u8;
+        let list_block = bucket.list(count);
+
+        assert_eq!(list_block.len() > 0, true);
+    }
+
+    fn find_next_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path);
+
+        let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
+        let count = 10u8;
+        let only_after_key = false;
+        // let only_after_key = true;
+        let list_block = bucket.find_next(test_key, count, only_after_key);
+
+        assert_eq!(list_block.len() > 0, true);
     }
 
     fn delete_data() {

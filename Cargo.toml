@@ -1,0 +1,12 @@
+[package]
+name = "blockbucket"
+version = "0.1.0"
+edition = "2024"
+description = "Read Write Delete (block u8: key, data) to file"
+license = "MIT"
+repository = "https://github.com/manhavn/blockbucket"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]

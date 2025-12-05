@@ -7,7 +7,7 @@
 
 [dependencies]
 #blockbucket = { git = "https://github.com/manhavn/blockbucket.git" }
-blockbucket = "0.1.2"
+blockbucket = "0.1.3"
 ```
 
 - `test.rs`
@@ -23,6 +23,7 @@ mod tests {
         set_data();
         get_data();
         list_data();
+        list_next_data();
         find_next_data();
         delete_data();
         delete_to_data();
@@ -56,8 +57,19 @@ mod tests {
         let file_path = String::from("data.db");
         let mut bucket = Bucket::new(file_path);
 
-        let count = 10u8;
-        let list_block = bucket.list(count);
+        let limit = 10u8;
+        let list_block = bucket.list(limit);
+
+        assert_eq!(list_block.len() > 0, true);
+    }
+
+    fn list_next_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path);
+
+        let limit = 10u8;
+        let skip = 0usize;
+        let list_block = bucket.list_next(limit, skip);
 
         assert_eq!(list_block.len() > 0, true);
     }
@@ -67,10 +79,10 @@ mod tests {
         let mut bucket = Bucket::new(file_path);
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
-        let count = 10u8;
+        let limit = 10u8;
         let only_after_key = false;
         // let only_after_key = true;
-        let list_block = bucket.find_next(test_key, count, only_after_key);
+        let list_block = bucket.find_next(test_key, limit, only_after_key);
 
         assert_eq!(list_block.len() > 0, true);
     }

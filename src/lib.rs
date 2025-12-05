@@ -8,11 +8,12 @@ pub trait Trait {
     fn delete(&mut self, key: Vec<u8>) -> std::io::Result<()>;
     fn delete_to(&mut self, key: Vec<u8>, only_before_key: bool) -> std::io::Result<()>;
     fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> std::io::Result<()>;
-    fn list(&mut self, count: u8) -> Vec<(Vec<u8>, Vec<u8>)>;
+    fn list(&mut self, limit: u8) -> Vec<(Vec<u8>, Vec<u8>)>;
+    fn list_next(&mut self, limit: u8, skip: usize) -> Vec<(Vec<u8>, Vec<u8>)>;
     fn find_next(
         &mut self,
         key: Vec<u8>,
-        count: u8,
+        limit: u8,
         only_after_key: bool,
     ) -> Vec<(Vec<u8>, Vec<u8>)>;
 }
@@ -134,7 +135,7 @@ fn convert_data_to_info(list_block_data: Vec<u8>) -> Vec<Block> {
     list_block_info
 }
 
-fn convert_data_to_info_limit(list_block_data: Vec<u8>, count: u8) -> Vec<Block> {
+fn convert_data_to_info_limit(list_block_data: Vec<u8>, limit: u8) -> Vec<Block> {
     let mut list_block_info: Vec<Block> = Vec::new();
     {
         let mut block_info = Block {
@@ -146,7 +147,7 @@ fn convert_data_to_info_limit(list_block_data: Vec<u8>, count: u8) -> Vec<Block>
         let mut tmp_group: Vec<u8> = Vec::new();
         let mut current: u8 = 0;
         for v in list_block_data {
-            if current >= count {
+            if current >= limit {
                 break;
             }
             match v {
@@ -182,11 +183,64 @@ fn convert_data_to_info_limit(list_block_data: Vec<u8>, count: u8) -> Vec<Block>
     list_block_info
 }
 
+fn convert_data_to_info_limit_skip(list_block_data: Vec<u8>, limit: u8, skip: usize) -> Vec<Block> {
+    let mut list_block_info: Vec<Block> = Vec::new();
+    {
+        let mut block_info = Block {
+            start: 0,
+            size_key: 0,
+            sum_key: 0,
+            size_data: 0,
+        };
+        let mut tmp_group: Vec<u8> = Vec::new();
+        let mut current: u8 = 0;
+        let mut current_skip: usize = 0;
+        for v in list_block_data {
+            if current >= limit {
+                break;
+            }
+            match v {
+                START => {
+                    block_info.start = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SIZE_KEY => {
+                    block_info.size_key = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SUM_KEY => {
+                    block_info.sum_key = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SIZE_DATA => {
+                    if block_info.size_key > 0 {
+                        if current_skip < skip {
+                            current_skip += 1;
+                        } else {
+                            block_info.size_data = digits_to_number(&tmp_group);
+                            list_block_info.push(block_info.clone());
+                            current += 1;
+                        }
+                    }
+                    tmp_group.clear();
+                }
+                END => {
+                    break;
+                }
+                _ => {
+                    tmp_group.push(v);
+                }
+            }
+        }
+    }
+    list_block_info
+}
+
 fn convert_data_to_info_find_next(
     file: &mut File,
     list_block_data: Vec<u8>,
     key: Vec<u8>,
-    count: u8,
+    limit: u8,
     only_after_key: bool,
 ) -> Vec<Block> {
     let mut list_block_info: Vec<Block> = Vec::new();
@@ -203,7 +257,7 @@ fn convert_data_to_info_find_next(
         let sum_current_key: u64 = key.iter().map(|&x| x as u64).sum();
         let mut check_is_begin = false;
         for v in list_block_data {
-            if current >= count {
+            if current >= limit {
                 break;
             }
             match v {
@@ -615,16 +669,22 @@ impl Trait for Bucket {
         Ok(())
     }
 
-    fn list(&mut self, count: u8) -> Vec<(Vec<u8>, Vec<u8>)> {
+    fn list(&mut self, limit: u8) -> Vec<(Vec<u8>, Vec<u8>)> {
         let (_, _, list_block_data) = get_end_data_size(&mut self.read);
-        let list_block_info = convert_data_to_info_limit(list_block_data, count);
+        let list_block_info = convert_data_to_info_limit(list_block_data, limit);
+        get_block(&mut self.read, list_block_info)
+    }
+
+    fn list_next(&mut self, limit: u8, skip: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let (_, _, list_block_data) = get_end_data_size(&mut self.read);
+        let list_block_info = convert_data_to_info_limit_skip(list_block_data, limit, skip);
         get_block(&mut self.read, list_block_info)
     }
 
     fn find_next(
         &mut self,
         key: Vec<u8>,
-        count: u8,
+        limit: u8,
         only_after_key: bool,
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
         let (_, _, list_block_data) = get_end_data_size(&mut self.read);
@@ -632,7 +692,7 @@ impl Trait for Bucket {
             &mut self.read,
             list_block_data,
             key,
-            count,
+            limit,
             only_after_key,
         );
         get_block(&mut self.read, list_block_info)
@@ -649,6 +709,7 @@ mod tests {
         set_data();
         get_data();
         list_data();
+        list_next_data();
         find_next_data();
         delete_data();
         delete_to_data();
@@ -682,8 +743,19 @@ mod tests {
         let file_path = String::from("data.db");
         let mut bucket = Bucket::new(file_path);
 
-        let count = 10u8;
-        let list_block = bucket.list(count);
+        let limit = 10u8;
+        let list_block = bucket.list(limit);
+
+        assert_eq!(list_block.len() > 0, true);
+    }
+
+    fn list_next_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path);
+
+        let limit = 10u8;
+        let skip = 0usize;
+        let list_block = bucket.list_next(limit, skip);
 
         assert_eq!(list_block.len() > 0, true);
     }
@@ -693,10 +765,10 @@ mod tests {
         let mut bucket = Bucket::new(file_path);
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
-        let count = 10u8;
+        let limit = 10u8;
         let only_after_key = false;
         // let only_after_key = true;
-        let list_block = bucket.find_next(test_key, count, only_after_key);
+        let list_block = bucket.find_next(test_key, limit, only_after_key);
 
         assert_eq!(list_block.len() > 0, true);
     }

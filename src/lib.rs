@@ -6,6 +6,7 @@ pub trait Trait {
     fn new(file_path: String) -> Self;
     fn get(&mut self, key: Vec<u8>) -> (Vec<u8>, Vec<u8>);
     fn delete(&mut self, key: Vec<u8>) -> std::io::Result<()>;
+    fn delete_to(&mut self, key: Vec<u8>, only_before_key: bool) -> std::io::Result<()>;
     fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> std::io::Result<()>;
     fn list(&mut self, count: u8) -> Vec<(Vec<u8>, Vec<u8>)>;
     fn find_next(
@@ -379,7 +380,7 @@ fn get_end_data_size(file: &mut File) -> (usize, usize, Vec<u8>) {
     (end_data_size, list_block_data.len(), list_block_data)
 }
 
-fn get_block_info(file: &mut File, list_block_info: &Vec<Block>, find_key: &Vec<u8>) -> Vec<Block> {
+fn get_block_info(file: &mut File, list_block_info: &Vec<Block>, find_key: Vec<u8>) -> Vec<Block> {
     let sum_find_key: u64 = find_key.iter().map(|&x| x as u64).sum();
     let mut result = Vec::new();
     let len_find_key = find_key.len();
@@ -469,6 +470,48 @@ fn remove_block(
     Ok(())
 }
 
+fn remove_block_to(
+    read: &mut File,
+    write: &mut File,
+    end_data_size: usize,
+    list_block_info: Vec<Block>,
+    also_delete_the_found_block: bool,
+    find_key: Vec<u8>,
+) -> std::io::Result<()> {
+    let mut list_block_data: Vec<u8> = Vec::new();
+    let sum_find_key: u64 = find_key.iter().map(|&x| x as u64).sum();
+    let len_find_key = find_key.len();
+    let len_list_block_info = list_block_info.len();
+    let mut last_index_found = None;
+    for i in (0..len_list_block_info).rev() {
+        let b = &list_block_info[i];
+        if b.size_key == len_find_key && b.sum_key == sum_find_key as usize {
+            if read.seek(Start(b.start as u64)).is_err() {
+                continue;
+            };
+            let mut found_key = vec![0u8; len_find_key];
+            if read.read_exact(&mut found_key).is_err() {
+                continue;
+            };
+            if *find_key == found_key {
+                last_index_found = Some(i);
+            }
+            break;
+        }
+    }
+    let Some(last_index_found) = last_index_found else {
+        return Ok(());
+    };
+    for i in 0..len_list_block_info {
+        if i > last_index_found || (last_index_found == i && !also_delete_the_found_block) {
+            let block = &list_block_info[i];
+            list_block_data = push_block_to_data(list_block_data, block.clone());
+        }
+    }
+    update_list_block(write, end_data_size, list_block_data)?;
+    Ok(())
+}
+
 fn add_block(
     file: &mut File,
     start: usize,
@@ -513,7 +556,7 @@ impl Trait for Bucket {
     fn get(&mut self, key: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
         let (_, _, list_block_data) = get_end_data_size(&mut self.read);
         let list_block_info = convert_data_to_info(list_block_data);
-        let list_found = get_block_info(&mut self.read, &list_block_info, &key);
+        let list_found = get_block_info(&mut self.read, &list_block_info, key);
         let list_block = get_block(&mut self.read, list_found);
         let mut result: (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
         for b in list_block {
@@ -527,8 +570,25 @@ impl Trait for Bucket {
     fn delete(&mut self, key: Vec<u8>) -> std::io::Result<()> {
         let (end_data_size, _, list_block_data) = get_end_data_size(&mut self.read);
         let list_block_info = convert_data_to_info(list_block_data);
-        let list_found = get_block_info(&mut self.read, &list_block_info, &key);
+        let list_found = get_block_info(&mut self.read, &list_block_info, key);
         remove_block(&mut self.write, end_data_size, list_block_info, list_found)
+    }
+
+    fn delete_to(
+        &mut self,
+        key: Vec<u8>,
+        also_delete_the_found_block: bool,
+    ) -> std::io::Result<()> {
+        let (end_data_size, _, list_block_data) = get_end_data_size(&mut self.read);
+        let list_block_info = convert_data_to_info(list_block_data);
+        remove_block_to(
+            &mut self.read,
+            &mut self.write,
+            end_data_size,
+            list_block_info,
+            also_delete_the_found_block,
+            key,
+        )
     }
 
     fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> std::io::Result<()> {
@@ -591,6 +651,7 @@ mod tests {
         list_data();
         find_next_data();
         delete_data();
+        delete_to_data();
         delete_bucket();
     }
 
@@ -646,6 +707,20 @@ mod tests {
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let error = bucket.delete(test_key).is_err();
+
+        assert_eq!(error, false);
+    }
+
+    fn delete_to_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path);
+
+        let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
+        let also_delete_the_found_block = true;
+        // let also_delete_the_found_block = false;
+        let error = bucket
+            .delete_to(test_key, also_delete_the_found_block)
+            .is_err();
 
         assert_eq!(error, false);
     }

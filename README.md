@@ -7,7 +7,7 @@
 
 [dependencies]
 #blockbucket = { git = "https://github.com/manhavn/blockbucket.git" }
-blockbucket = "0.1.1"
+blockbucket = "0.1.2"
 ```
 
 - `test.rs`
@@ -25,6 +25,7 @@ mod tests {
         list_data();
         find_next_data();
         delete_data();
+        delete_to_data();
         delete_bucket();
     }
 
@@ -80,6 +81,20 @@ mod tests {
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let error = bucket.delete(test_key).is_err();
+
+        assert_eq!(error, false);
+    }
+
+    fn delete_to_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path);
+
+        let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
+        let also_delete_the_found_block = true;
+        // let also_delete_the_found_block = false;
+        let error = bucket
+            .delete_to(test_key, also_delete_the_found_block)
+            .is_err();
 
         assert_eq!(error, false);
     }

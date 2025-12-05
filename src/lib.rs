@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom::Start, Write};
+use std::io::{Read, Result, Seek, SeekFrom::Start, Write};
 
 pub trait Trait {
     fn new(file_path: String) -> Self;
     fn get(&mut self, key: Vec<u8>) -> (Vec<u8>, Vec<u8>);
-    fn delete(&mut self, key: Vec<u8>) -> std::io::Result<()>;
-    fn delete_to(&mut self, key: Vec<u8>, only_before_key: bool) -> std::io::Result<()>;
-    fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> std::io::Result<()>;
+    fn delete(&mut self, key: Vec<u8>) -> Result<()>;
+    fn delete_to(&mut self, key: Vec<u8>, also_delete_the_found_block: bool) -> Result<()>;
+    fn set(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<()>;
+    fn set_many(&mut self, list_data: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()>;
     fn list(&mut self, limit: u8) -> Vec<(Vec<u8>, Vec<u8>)>;
     fn list_next(&mut self, limit: u8, skip: usize) -> Vec<(Vec<u8>, Vec<u8>)>;
     fn find_next(
@@ -40,45 +41,84 @@ struct Block {
 }
 
 fn group_digits_to_vec(mut n: usize) -> Vec<u8> {
-    let mut digits = Vec::new();
-    while n > 0 {
-        digits.push((n % 10) as u8);
-        n /= 10;
-    }
-    digits.reverse();
+    // buffer stack (không heap)
+    let mut buf = [0u8; 32];
+    let len_t: usize;
 
-    let mut result = Vec::new();
-    let mut i = 0;
+    // tách digits vào buf theo thứ tự từ trái sang phải
+    {
+        let mut tmp = [0u8; 32];
+        let mut tlen = 0;
 
-    while i < digits.len() {
-        // thử lấy 3 chữ số
-        if i + 2 < digits.len() {
-            let v = (digits[i] as u16) * 100 + (digits[i + 1] as u16) * 10 + (digits[i + 2] as u16);
-            if v <= MAX_DIGIT_GROUP {
-                result.push(v as u8);
-                i += 3;
-                continue;
+        while n > 0 {
+            unsafe {
+                *tmp.get_unchecked_mut(tlen) = (n % 10) as u8;
+            }
+            tlen += 1;
+            n /= 10;
+        }
+
+        // đảo thứ tự
+        for i in 0..tlen {
+            unsafe {
+                *buf.get_unchecked_mut(i) = *tmp.get_unchecked(tlen - 1 - i);
             }
         }
-
-        // thử lấy 2 chữ số
-        if i + 1 < digits.len() {
-            result.push((digits[i]) * 10 + (digits[i + 1]));
-            i += 2;
-            continue;
-        }
-
-        // fallback: 1 chữ số
-        result.push(digits[i]);
-        i += 1;
+        len_t = tlen;
     }
-    result
+
+    // chuẩn bị output
+    let mut out = Vec::with_capacity(len_t);
+    let mut i = 0;
+
+    unsafe {
+        while i < len_t {
+            let d0 = *buf.get_unchecked(i);
+
+            // 1) preserve số 0 đứng riêng
+            if d0 == 0 {
+                out.push(0);
+                i += 1;
+                continue;
+            }
+
+            // 2) thử lấy 3 chữ số
+            if i + 2 < len_t {
+                let d1 = *buf.get_unchecked(i + 1);
+                let d2 = *buf.get_unchecked(i + 2);
+                let v = d0 as u16 * 100 + d1 as u16 * 10 + d2 as u16;
+
+                if v <= MAX_DIGIT_GROUP {
+                    out.push(v as u8);
+                    i += 3;
+                    continue;
+                }
+            }
+
+            // 3) thử lấy 2 chữ số
+            if i + 1 < len_t {
+                let d1 = *buf.get_unchecked(i + 1);
+                let v = d0 as u16 * 10 + d1 as u16;
+                if v <= MAX_DIGIT_GROUP {
+                    out.push(v as u8);
+                    i += 2;
+                    continue;
+                }
+            }
+
+            // 4) fallback 1 chữ số
+            out.push(d0);
+            i += 1;
+        }
+    }
+    out
 }
 
 fn digits_to_number(digits: &[u8]) -> usize {
     let mut n: usize = 0;
-    for &d in digits {
-        n = n * 10 + d as usize;
+    for &x in digits {
+        let digits_count = if x == 0 { 1 } else { x.ilog10() as usize + 1 };
+        n = n * 10usize.pow(digits_count as u32) + x as usize;
     }
     n
 }
@@ -237,7 +277,7 @@ fn convert_data_to_info_limit_skip(list_block_data: Vec<u8>, limit: u8, skip: us
 }
 
 fn convert_data_to_info_find_next(
-    file: &mut File,
+    read: &mut File,
     list_block_data: Vec<u8>,
     key: Vec<u8>,
     limit: u8,
@@ -280,9 +320,9 @@ fn convert_data_to_info_find_next(
                             && block_info.size_key == len_current_key
                             && block_info.sum_key == sum_current_key as usize
                         {
-                            if !file.seek(Start(block_info.start as u64)).is_err() {
+                            if !read.seek(Start(block_info.start as u64)).is_err() {
                                 let mut found_key = vec![0u8; block_info.size_key];
-                                if !file.read_exact(&mut found_key).is_err() {
+                                if !read.read_exact(&mut found_key).is_err() {
                                     check_is_begin = found_key == key.clone();
                                 };
                             }
@@ -359,40 +399,44 @@ fn get_list_space(end_data_size: usize, list_block_info: Vec<Block>) -> Vec<Bloc
 fn get_perfect_space(
     list_space: Vec<Block>,
     end_data_size: usize,
-    key: &Vec<u8>,
-    value: &Vec<u8>,
-) -> (usize, usize, bool) {
-    let data_size = key.len() + value.len();
-    let mut perfect_block_size: usize = data_size;
-    let mut perfect_size: usize = 0;
-    let mut perfect_start_block = end_data_size;
+    block_size: usize,
+) -> (usize, usize) {
+    let mut perfect_block_size: usize = block_size;
+    let mut perfect_free_size: usize = 0;
+    let mut start_block = end_data_size;
     let mut is_last_space: bool = false;
     for s in list_space {
-        if s.size_data >= data_size || s.sum_key == 1 {
+        if s.size_data >= block_size || s.sum_key == 1 {
             let new_size = s.size_data;
-            if perfect_size == 0
-                || (perfect_size > new_size && end_data_size > s.start + s.size_data)
+            if perfect_free_size == 0
+                || (perfect_free_size > new_size && end_data_size > s.start + s.size_data)
             {
-                perfect_size = new_size;
-                perfect_start_block = s.start;
+                perfect_free_size = new_size;
+                start_block = s.start;
                 is_last_space = s.sum_key == 1;
             }
         }
     }
-    if perfect_size >= perfect_block_size {
+    if perfect_free_size >= perfect_block_size {
         perfect_block_size = 0
     }
-    (perfect_block_size, perfect_start_block, is_last_space)
+    let start_list: usize;
+    if is_last_space {
+        start_list = start_block + block_size;
+    } else {
+        start_list = end_data_size + perfect_block_size;
+    }
+    (start_list, start_block)
 }
 
-fn get_end_data_size(file: &mut File) -> (usize, usize, Vec<u8>) {
-    let zero_result = (FIRST_SIZE, 0, Vec::new());
-    if file.seek(Start(0)).is_err() {
+fn get_end_data_size(read: &mut File) -> (usize, Vec<u8>) {
+    let zero_result = (FIRST_SIZE, Vec::new());
+    if read.seek(Start(0)).is_err() {
         return zero_result;
     }
 
     let mut buffer = vec![0u8; FIRST_SIZE];
-    if file.read_exact(&mut buffer).is_err() {
+    if read.read_exact(&mut buffer).is_err() {
         return zero_result;
     }
 
@@ -419,10 +463,10 @@ fn get_end_data_size(file: &mut File) -> (usize, usize, Vec<u8>) {
     if end_data_size == 0 {
         end_data_size = FIRST_SIZE;
     } else {
-        if file.seek(Start(end_data_size as u64)).is_err() {
+        if read.seek(Start(end_data_size as u64)).is_err() {
             return zero_result;
         }
-        if file.read_exact(&mut list_block_data).is_err() {
+        if read.read_exact(&mut list_block_data).is_err() {
             return zero_result;
         }
 
@@ -430,22 +474,21 @@ fn get_end_data_size(file: &mut File) -> (usize, usize, Vec<u8>) {
             list_block_data.truncate(pos);
         }
     }
-
-    (end_data_size, list_block_data.len(), list_block_data)
+    (end_data_size, list_block_data)
 }
 
-fn get_block_info(file: &mut File, list_block_info: &Vec<Block>, find_key: Vec<u8>) -> Vec<Block> {
+fn get_block_info(read: &mut File, list_block_info: &Vec<Block>, find_key: Vec<u8>) -> Vec<Block> {
     let sum_find_key: u64 = find_key.iter().map(|&x| x as u64).sum();
     let mut result = Vec::new();
     let len_find_key = find_key.len();
     if len_find_key > 0 && sum_find_key > 0 {
         for v in list_block_info {
             if len_find_key == v.size_key && sum_find_key as usize == v.sum_key {
-                if file.seek(Start(v.start as u64)).is_err() {
+                if read.seek(Start(v.start as u64)).is_err() {
                     continue;
                 };
                 let mut found_key = vec![0u8; len_find_key];
-                if file.read_exact(&mut found_key).is_err() {
+                if read.read_exact(&mut found_key).is_err() {
                     continue;
                 };
                 if *find_key == found_key {
@@ -457,40 +500,35 @@ fn get_block_info(file: &mut File, list_block_info: &Vec<Block>, find_key: Vec<u
     result
 }
 
-fn update_list_block(
-    file: &mut File,
-    start: usize,
-    list_block_data: Vec<u8>,
-) -> std::io::Result<Vec<u8>> {
+fn update_list_block(write: &mut File, start: usize, list_block_data: Vec<u8>) -> Result<()> {
     let first_block_data = merge_vec(&[
         group_digits_to_vec(start),
         vec![END],
         group_digits_to_vec(list_block_data.len()),
         vec![END],
     ]);
-    file.seek(Start(start as u64))?;
-    file.write_all(&merge_vec(&[list_block_data, vec![END]]))?;
-    file.seek(Start(0))?;
-    file.write_all(&first_block_data)?;
-    Ok(first_block_data)
+    write.seek(Start(start as u64))?;
+    write.write_all(&merge_vec(&[list_block_data, vec![END]]))?;
+    write.seek(Start(0))?;
+    write.write_all(&first_block_data)
 }
 
-fn get_block(file: &mut File, list_found: Vec<Block>) -> Vec<(Vec<u8>, Vec<u8>)> {
+fn get_block(read: &mut File, list_found: Vec<Block>) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut result: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     for f in list_found {
         let mut block = (Vec::new(), Vec::new());
-        if file.seek(Start(f.start as u64)).is_err() {
+        if read.seek(Start(f.start as u64)).is_err() {
             continue;
         };
         let mut found_key = vec![0u8; f.size_key];
-        if file.read_exact(&mut found_key).is_err() {
+        if read.read_exact(&mut found_key).is_err() {
             continue;
         };
-        if file.seek(Start((f.start + f.size_key) as u64)).is_err() {
+        if read.seek(Start((f.start + f.size_key) as u64)).is_err() {
             continue;
         };
         let mut found_value = vec![0u8; f.size_data];
-        if file.read_exact(&mut found_value).is_err() {
+        if read.read_exact(&mut found_value).is_err() {
             continue;
         };
         block.0 = found_key;
@@ -501,11 +539,11 @@ fn get_block(file: &mut File, list_found: Vec<Block>) -> Vec<(Vec<u8>, Vec<u8>)>
 }
 
 fn remove_block(
-    file: &mut File,
+    write: &mut File,
     end_data_size: usize,
     list_block_info: Vec<Block>,
     list_delete: Vec<Block>,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let mut list_block_data: Vec<u8> = Vec::new();
     let mut map_skip: HashMap<usize, bool> = HashMap::new();
     for l in list_block_info.clone() {
@@ -520,8 +558,7 @@ fn remove_block(
         }
         list_block_data = push_block_to_data(list_block_data, l);
     }
-    update_list_block(file, end_data_size, list_block_data)?;
-    Ok(())
+    update_list_block(write, end_data_size, list_block_data)
 }
 
 fn remove_block_to(
@@ -531,7 +568,7 @@ fn remove_block_to(
     list_block_info: Vec<Block>,
     also_delete_the_found_block: bool,
     find_key: Vec<u8>,
-) -> std::io::Result<()> {
+) -> Result<()> {
     let mut list_block_data: Vec<u8> = Vec::new();
     let sum_find_key: u64 = find_key.iter().map(|&x| x as u64).sum();
     let len_find_key = find_key.len();
@@ -562,35 +599,7 @@ fn remove_block_to(
             list_block_data = push_block_to_data(list_block_data, block.clone());
         }
     }
-    update_list_block(write, end_data_size, list_block_data)?;
-    Ok(())
-}
-
-fn add_block(
-    file: &mut File,
-    start: usize,
-    key: Vec<u8>,
-    data: Vec<u8>,
-) -> std::io::Result<(usize, Vec<u8>)> {
-    let len_key = key.len();
-    let sum_key: u64 = key.iter().map(|&x| x as u64).sum();
-    let len_data = data.len();
-    let block_size = len_key + len_data;
-    let block_data = merge_vec(&[key, data]);
-
-    file.seek(Start(start as u64))?;
-    file.write_all(&block_data)?;
-
-    let info_data = push_block_to_data(
-        vec![],
-        Block {
-            start,
-            size_key: len_key,
-            sum_key: sum_key as usize,
-            size_data: len_data,
-        },
-    );
-    Ok((block_size, info_data))
+    update_list_block(write, end_data_size, list_block_data)
 }
 
 impl Trait for Bucket {
@@ -608,7 +617,7 @@ impl Trait for Bucket {
     }
 
     fn get(&mut self, key: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
-        let (_, _, list_block_data) = get_end_data_size(&mut self.read);
+        let (_, list_block_data) = get_end_data_size(&mut self.read);
         let list_block_info = convert_data_to_info(list_block_data);
         let list_found = get_block_info(&mut self.read, &list_block_info, key);
         let list_block = get_block(&mut self.read, list_found);
@@ -621,19 +630,15 @@ impl Trait for Bucket {
         result
     }
 
-    fn delete(&mut self, key: Vec<u8>) -> std::io::Result<()> {
-        let (end_data_size, _, list_block_data) = get_end_data_size(&mut self.read);
+    fn delete(&mut self, key: Vec<u8>) -> Result<()> {
+        let (end_data_size, list_block_data) = get_end_data_size(&mut self.read);
         let list_block_info = convert_data_to_info(list_block_data);
         let list_found = get_block_info(&mut self.read, &list_block_info, key);
         remove_block(&mut self.write, end_data_size, list_block_info, list_found)
     }
 
-    fn delete_to(
-        &mut self,
-        key: Vec<u8>,
-        also_delete_the_found_block: bool,
-    ) -> std::io::Result<()> {
-        let (end_data_size, _, list_block_data) = get_end_data_size(&mut self.read);
+    fn delete_to(&mut self, key: Vec<u8>, also_delete_the_found_block: bool) -> Result<()> {
+        let (end_data_size, list_block_data) = get_end_data_size(&mut self.read);
         let list_block_info = convert_data_to_info(list_block_data);
         remove_block_to(
             &mut self.read,
@@ -645,38 +650,146 @@ impl Trait for Bucket {
         )
     }
 
-    fn set(&mut self, key: Vec<u8>, value: Vec<u8>) -> std::io::Result<()> {
-        let (end_data_size, _, list_block_data) = get_end_data_size(&mut self.read);
+    fn set(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<()> {
+        let (end_data_size, list_block_data) = get_end_data_size(&mut self.read);
         let list_block_info = convert_data_to_info(list_block_data.clone());
-
         let list_space = get_list_space(end_data_size, list_block_info);
 
-        let (perfect_space_size, perfect_start_space, is_last_space) =
-            get_perfect_space(list_space, end_data_size, &key, &value);
+        let len_key = key.len();
+        let len_data = data.len();
+        let block_size = len_key + len_data;
+        let sum_key: u64 = key.iter().map(|&x| x as u64).sum();
 
-        let (block_size, info_data) = add_block(&mut self.write, perfect_start_space, key, value)?;
+        let (start_list, start_block) = get_perfect_space(list_space, end_data_size, block_size);
+        let info_data = push_block_to_data(
+            vec![],
+            Block {
+                start: start_block,
+                size_key: len_key,
+                sum_key: sum_key as usize,
+                size_data: len_data,
+            },
+        );
 
-        let mut start_list_block = end_data_size + perfect_space_size;
-        if is_last_space {
-            start_list_block = perfect_start_space + block_size;
+        let list_block_data = merge_vec(&[list_block_data, info_data]);
+        update_list_block(&mut self.write, start_list, list_block_data)?;
+
+        self.write.seek(Start(start_block as u64))?;
+        self.write.write_all(&merge_vec(&[key, data]))
+    }
+
+    fn set_many(&mut self, list_data: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()> {
+        let (end_data_size, list_block_data) = get_end_data_size(&mut self.read);
+        let list_block_info = convert_data_to_info(list_block_data.clone());
+        let list_space = get_list_space(end_data_size, list_block_info);
+
+        let mut start_list_block = end_data_size;
+        let mut list_info_data: Vec<u8> = Vec::new();
+
+        let mut min_size_block: usize = 0;
+        let mut max_size_block: usize = 0;
+        let mut list_config_insert: Vec<Block> = Vec::new();
+        for i in 0..list_data.len() {
+            let d = list_data[i].clone();
+            let len_key = d.0.len();
+            let len_data = d.1.len();
+            let block_size = len_key + len_data;
+            if min_size_block == 0 || block_size < min_size_block {
+                min_size_block = block_size;
+            }
+            if block_size > max_size_block {
+                max_size_block = block_size;
+            }
+            let sum_key: u64 = d.0.iter().map(|&x| x as u64).sum();
+            list_config_insert.push(Block {
+                start: i,
+                size_key: len_key,
+                sum_key: sum_key as usize,
+                size_data: len_data,
+            });
         }
 
-        update_list_block(
-            &mut self.write,
-            start_list_block,
-            merge_vec(&[list_block_data, info_data]),
-        )?;
+        list_config_insert.sort_by(|a, b| {
+            let ka = a.size_key + a.size_data;
+            let kb = b.size_key + b.size_data;
+            kb.cmp(&ka)
+        }); // sort decrement [ max ---> min ]
+
+        let mut selected: HashMap<usize, bool> = HashMap::new();
+        let mut list_write_data: Vec<(usize, Vec<u8>, Vec<u8>)> = Vec::new();
+        for s in list_space {
+            let mut total_space_used = 0;
+            if s.size_data < min_size_block && s.sum_key == 0 {
+                continue;
+            }
+            for c in list_config_insert.clone() {
+                if selected.get(&c.start) == Some(&true) {
+                    continue;
+                }
+                let block_size = c.size_key + c.size_data;
+                if s.size_data >= block_size + total_space_used || s.sum_key == 1 {
+                    selected.insert(c.start, true);
+                    let start_block = s.start + total_space_used;
+                    let d = list_data[c.start].clone();
+                    let info_data = push_block_to_data(
+                        vec![],
+                        Block {
+                            start: start_block,
+                            size_key: c.size_key,
+                            sum_key: c.sum_key,
+                            size_data: c.size_data,
+                        },
+                    );
+                    list_write_data.push((start_block, d.0, d.1));
+                    list_info_data = merge_vec(&[list_info_data, info_data]);
+                    if s.sum_key == 1 {
+                        start_list_block += block_size;
+                    }
+                    total_space_used += block_size;
+                }
+            }
+        }
+
+        for c in list_config_insert.clone() {
+            if selected.get(&c.start) == Some(&true) {
+                continue;
+            }
+            let block_size = c.size_key + c.size_data;
+            let start_block = start_list_block;
+            selected.insert(c.start, true);
+            let d = list_data[c.start].clone();
+            let info_data = push_block_to_data(
+                vec![],
+                Block {
+                    start: start_block,
+                    size_key: c.size_key,
+                    sum_key: c.sum_key,
+                    size_data: c.size_data,
+                },
+            );
+            list_write_data.push((start_block, d.0, d.1));
+            list_info_data = merge_vec(&[list_info_data, info_data]);
+            start_list_block += block_size;
+        }
+
+        let list_block_data = merge_vec(&[list_block_data, list_info_data]);
+        update_list_block(&mut self.write, start_list_block, list_block_data)?;
+
+        for w in list_write_data {
+            self.write.seek(Start(w.0 as u64))?;
+            self.write.write_all(&merge_vec(&[w.1, w.2]))?;
+        }
         Ok(())
     }
 
     fn list(&mut self, limit: u8) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let (_, _, list_block_data) = get_end_data_size(&mut self.read);
+        let (_, list_block_data) = get_end_data_size(&mut self.read);
         let list_block_info = convert_data_to_info_limit(list_block_data, limit);
         get_block(&mut self.read, list_block_info)
     }
 
     fn list_next(&mut self, limit: u8, skip: usize) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let (_, _, list_block_data) = get_end_data_size(&mut self.read);
+        let (_, list_block_data) = get_end_data_size(&mut self.read);
         let list_block_info = convert_data_to_info_limit_skip(list_block_data, limit, skip);
         get_block(&mut self.read, list_block_info)
     }
@@ -687,7 +800,7 @@ impl Trait for Bucket {
         limit: u8,
         only_after_key: bool,
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
-        let (_, _, list_block_data) = get_end_data_size(&mut self.read);
+        let (_, list_block_data) = get_end_data_size(&mut self.read);
         let list_block_info = convert_data_to_info_find_next(
             &mut self.read,
             list_block_data,
@@ -707,6 +820,7 @@ mod tests {
     #[test]
     fn test_all() {
         set_data();
+        set_many_data();
         get_data();
         list_data();
         list_next_data();
@@ -720,9 +834,27 @@ mod tests {
         let file_path = String::from("data.db");
         let mut bucket = Bucket::new(file_path);
 
-        let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
+        let test_key: Vec<u8> = String::from("test-key-007-99999999999999").into_bytes();
         let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
         let error = bucket.set(test_key, test_value).is_err();
+
+        assert_eq!(error, false);
+    }
+
+    fn set_many_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path);
+
+        // let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
+        let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
+
+        let mut list_data: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for i in 0..10 {
+            let test_key = format!("test-key-00{}-99999999999999", i).into_bytes();
+            list_data.push((test_key, test_value.clone()));
+        }
+
+        let error = bucket.set_many(list_data).is_err();
 
         assert_eq!(error, false);
     }

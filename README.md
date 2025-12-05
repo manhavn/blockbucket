@@ -7,7 +7,7 @@
 
 [dependencies]
 #blockbucket = { git = "https://github.com/manhavn/blockbucket.git" }
-blockbucket = "0.1.3"
+blockbucket = "0.1.4"
 ```
 
 - `test.rs`
@@ -21,6 +21,7 @@ mod tests {
     #[test]
     fn test_all() {
         set_data();
+        set_many_data();
         get_data();
         list_data();
         list_next_data();
@@ -34,9 +35,27 @@ mod tests {
         let file_path = String::from("data.db");
         let mut bucket = Bucket::new(file_path);
 
-        let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
+        let test_key: Vec<u8> = String::from("test-key-007-99999999999999").into_bytes();
         let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
         let error = bucket.set(test_key, test_value).is_err();
+
+        assert_eq!(error, false);
+    }
+
+    fn set_many_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path);
+
+        // let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
+        let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
+
+        let mut list_data: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+        for i in 0..10 {
+            let test_key = format!("test-key-00{}-99999999999999", i).into_bytes();
+            list_data.push((test_key, test_value.clone()));
+        }
+
+        let error = bucket.set_many(list_data).is_err();
 
         assert_eq!(error, false);
     }

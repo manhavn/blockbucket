@@ -7,7 +7,7 @@
 
 [dependencies]
 #blockbucket = { git = "https://github.com/manhavn/blockbucket.git" }
-blockbucket = "0.1.4"
+blockbucket = "0.1.5" # https://crates.io/crates/blockbucket
 ```
 
 - `test.rs`
@@ -21,12 +21,12 @@ mod tests {
     #[test]
     fn test_all() {
         set_data();
-        set_many_data();
         get_data();
+        delete_data();
+        set_many_data();
         list_data();
         list_next_data();
         find_next_data();
-        delete_data();
         delete_to_data();
         delete_bucket();
     }
@@ -35,9 +35,31 @@ mod tests {
         let file_path = String::from("data.db");
         let mut bucket = Bucket::new(file_path);
 
-        let test_key: Vec<u8> = String::from("test-key-007-99999999999999").into_bytes();
+        let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
         let error = bucket.set(test_key, test_value).is_err();
+
+        assert_eq!(error, false);
+    }
+
+    fn get_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path);
+
+        let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
+        let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
+        let (key_block, value_block) = bucket.get(test_key.clone());
+
+        assert_eq!(test_key, key_block);
+        assert_eq!(test_value, value_block);
+    }
+
+    fn delete_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path);
+
+        let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
+        let error = bucket.delete(test_key).is_err();
 
         assert_eq!(error, false);
     }
@@ -58,18 +80,6 @@ mod tests {
         let error = bucket.set_many(list_data).is_err();
 
         assert_eq!(error, false);
-    }
-
-    fn get_data() {
-        let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
-
-        let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
-        let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
-        let (key_block, value_block) = bucket.get(test_key.clone());
-
-        assert_eq!(test_key, key_block);
-        assert_eq!(test_value, value_block);
     }
 
     fn list_data() {
@@ -104,16 +114,6 @@ mod tests {
         let list_block = bucket.find_next(test_key, limit, only_after_key);
 
         assert_eq!(list_block.len() > 0, true);
-    }
-
-    fn delete_data() {
-        let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
-
-        let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
-        let error = bucket.delete(test_key).is_err();
-
-        assert_eq!(error, false);
     }
 
     fn delete_to_data() {

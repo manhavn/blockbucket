@@ -1,6 +1,6 @@
 [package]
 name = "blockbucket"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2024"
 description = "Read Write Delete (block u8: key, data) to file"
 license = "MIT"

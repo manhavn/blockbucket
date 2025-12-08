@@ -1,5 +1,12 @@
 # SETUP
 
+- Github: [https://github.com/manhavn/blockbucket](https://github.com/manhavn/blockbucket)
+- Crate: [https://crates.io/crates/blockbucket](https://crates.io/crates/blockbucket)
+
+```shell
+ cargo add blockbucket
+```
+
 - `Cargo.toml`
 
 ```toml
@@ -7,7 +14,7 @@
 
 [dependencies]
 #blockbucket = { git = "https://github.com/manhavn/blockbucket.git" }
-blockbucket = "0.1.5" # https://crates.io/crates/blockbucket
+blockbucket = "0.1.6" # https://crates.io/crates/blockbucket
 ```
 
 - `test.rs`
@@ -33,7 +40,7 @@ mod tests {
 
     fn set_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
@@ -44,7 +51,7 @@ mod tests {
 
     fn get_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
@@ -56,7 +63,7 @@ mod tests {
 
     fn delete_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let error = bucket.delete(test_key).is_err();
@@ -66,7 +73,7 @@ mod tests {
 
     fn set_many_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         // let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
@@ -84,7 +91,7 @@ mod tests {
 
     fn list_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let limit = 10u8;
         let list_block = bucket.list(limit);
@@ -94,7 +101,7 @@ mod tests {
 
     fn list_next_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let limit = 10u8;
         let skip = 0usize;
@@ -105,7 +112,7 @@ mod tests {
 
     fn find_next_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let limit = 10u8;
@@ -118,7 +125,7 @@ mod tests {
 
     fn delete_to_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let also_delete_the_found_block = true;

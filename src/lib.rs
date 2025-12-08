@@ -3,7 +3,9 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Result, Seek, SeekFrom::Start, Write};
 
 pub trait Trait {
-    fn new(file_path: String) -> Self;
+    fn new(path: String) -> Result<Self>
+    where
+        Self: Sized;
     fn set(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<()>;
     fn get(&mut self, key: Vec<u8>) -> (Vec<u8>, Vec<u8>);
     fn delete(&mut self, key: Vec<u8>) -> Result<()>;
@@ -24,7 +26,7 @@ pub struct Bucket {
     pub(crate) write: File,
 }
 
-const MAX_DIGIT_GROUP: u16 = 249;
+const MAX_DIGIT_GROUP: u8 = 249;
 const START: u8 = 250;
 const SIZE_KEY: u8 = 251;
 const SUM_KEY: u8 = 252;
@@ -73,7 +75,7 @@ fn group_digits_to_vec(mut n: usize) -> Vec<u8> {
         if i + 2 < digits.len() {
             let v = (digits[i] as u16) * 100 + (digits[i + 1] as u16) * 10 + (digits[i + 2] as u16);
 
-            if v <= MAX_DIGIT_GROUP {
+            if v <= MAX_DIGIT_GROUP as u16 {
                 result.push(v as u8);
                 i += 3;
                 continue;
@@ -82,9 +84,9 @@ fn group_digits_to_vec(mut n: usize) -> Vec<u8> {
 
         // thử gom 2 chữ số
         if i + 1 < digits.len() {
-            let v = digits[i] as u16 * 10 + digits[i + 1] as u16;
+            let v = digits[i] * 10 + digits[i + 1];
             if v <= MAX_DIGIT_GROUP {
-                result.push(v as u8);
+                result.push(v);
                 i += 2;
                 continue;
             }
@@ -166,8 +168,12 @@ fn get_one_data(read: &mut File, list_block_data: Vec<u8>, key: Vec<u8>) -> (Vec
     let mut result: (Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new());
     {
         let len_key = key.len();
-        let sum_key: u64 = key.iter().map(|&x| x as u64).sum();
-        let sum_md5: u64 = md5::compute(&key).to_vec().iter().map(|&x| x as u64).sum();
+        let sum_key: usize = key.iter().map(|&x| x as usize).sum();
+        let sum_md5: usize = md5::compute(&key)
+            .to_vec()
+            .iter()
+            .map(|&x| x as usize)
+            .sum();
 
         let mut block_info = EMPTY_BLOCK;
         let mut tmp_group: Vec<u8> = Vec::new();
@@ -194,14 +200,14 @@ fn get_one_data(read: &mut File, list_block_data: Vec<u8>, key: Vec<u8>) -> (Vec
                     tmp_group.clear();
                     {
                         if block_info.size_key == len_key
-                            && block_info.sum_key == sum_key as usize
-                            && block_info.sum_md5 == sum_md5 as usize
+                            && block_info.sum_key == sum_key
+                            && block_info.sum_md5 == sum_md5
                         {
-                            let pull = pull_data(read, &block_info)
-                                .unwrap_or_else(|_| (vec![], vec![], false));
-                            if pull.2 {
-                                result.0 = pull.0;
-                                result.1 = pull.1;
+                            let (found_key, found_data, found) = pull_data(read, &block_info)
+                                .unwrap_or_else(|_| (Vec::new(), Vec::new(), false));
+                            if found {
+                                result.0 = found_key;
+                                result.1 = found_data;
                                 break;
                             }
                         }
@@ -251,10 +257,10 @@ fn get_list_data(read: &mut File, list_block_data: Vec<u8>, limit: u8) -> Vec<(V
                     block_info.size_data = digits_to_number(&tmp_group);
                     tmp_group.clear();
                     {
-                        let pull = pull_data(read, &block_info)
-                            .unwrap_or_else(|_| (vec![], vec![], false));
-                        if pull.2 {
-                            result.push((pull.0, pull.1));
+                        let (found_key, found_data, found) = pull_data(read, &block_info)
+                            .unwrap_or_else(|_| (Vec::new(), Vec::new(), false));
+                        if found {
+                            result.push((found_key, found_data));
                             current += 1;
                         }
                     }
@@ -309,13 +315,13 @@ fn get_list_next_data(
                     block_info.size_data = digits_to_number(&tmp_group);
                     tmp_group.clear();
                     {
-                        let pull = pull_data(read, &block_info)
-                            .unwrap_or_else(|_| (vec![], vec![], false));
-                        if pull.2 {
+                        let (found_key, found_data, found) = pull_data(read, &block_info)
+                            .unwrap_or_else(|_| (Vec::new(), Vec::new(), false));
+                        if found {
                             if current_skip < skip {
                                 current_skip += 1;
                             } else {
-                                result.push((pull.0, pull.1));
+                                result.push((found_key, found_data));
                                 current += 1;
                             }
                         }
@@ -347,8 +353,12 @@ fn get_find_next_data(
         let mut tmp_group: Vec<u8> = Vec::new();
         let mut current: u8 = 0;
         let len_current_key = key.len();
-        let sum_current_key: u64 = key.iter().map(|&x| x as u64).sum();
-        let sum_current_md5: u64 = md5::compute(&key).to_vec().iter().map(|&x| x as u64).sum();
+        let sum_current_key: usize = key.iter().map(|&x| x as usize).sum();
+        let sum_current_md5: usize = md5::compute(&key)
+            .to_vec()
+            .iter()
+            .map(|&x| x as usize)
+            .sum();
         let mut check_is_begin = false;
         for v in list_block_data {
             if current >= limit {
@@ -377,19 +387,19 @@ fn get_find_next_data(
                     {
                         if !check_is_begin
                             && block_info.size_key == len_current_key
-                            && block_info.sum_key == sum_current_key as usize
-                            && block_info.sum_md5 == sum_current_md5 as usize
+                            && block_info.sum_key == sum_current_key
+                            && block_info.sum_md5 == sum_current_md5
                         {
-                            let pull =
-                                pull_key(read, &block_info).unwrap_or_else(|_| (vec![], false));
-                            check_is_begin = pull.1 && pull.0 == key;
+                            let (found_key, found) =
+                                pull_key(read, &block_info).unwrap_or_else(|_| (Vec::new(), false));
+                            check_is_begin = found && found_key == key;
                         }
                         if check_is_begin {
-                            let pull = pull_data(read, &block_info)
-                                .unwrap_or_else(|_| (vec![], vec![], false));
-                            if pull.2 {
+                            let (found_key, found_data, found) = pull_data(read, &block_info)
+                                .unwrap_or_else(|_| (Vec::new(), Vec::new(), false));
+                            if found {
                                 if !only_after_key || current > 0 {
-                                    result.push((pull.0, pull.1));
+                                    result.push((found_key, found_data));
                                 }
                                 current += 1;
                             }
@@ -425,11 +435,11 @@ fn delete_to_data(
         let mut block_info = EMPTY_BLOCK;
         let mut tmp_group: Vec<u8> = Vec::new();
         let len_current_key = find_key.len();
-        let sum_current_key: u64 = find_key.iter().map(|&x| x as u64).sum();
-        let sum_current_md5: u64 = md5::compute(&find_key)
+        let sum_current_key: usize = find_key.iter().map(|&x| x as usize).sum();
+        let sum_current_md5: usize = md5::compute(&find_key)
             .to_vec()
             .iter()
-            .map(|&x| x as u64)
+            .map(|&x| x as usize)
             .sum();
         for i in 0..list_block_data.len() {
             let v = list_block_data[i];
@@ -455,12 +465,12 @@ fn delete_to_data(
                     tmp_group.clear();
                     {
                         if block_info.size_key == len_current_key
-                            && block_info.sum_key == sum_current_key as usize
-                            && block_info.sum_md5 == sum_current_md5 as usize
+                            && block_info.sum_key == sum_current_key
+                            && block_info.sum_md5 == sum_current_md5
                         {
-                            let pull =
-                                pull_key(read, &block_info).unwrap_or_else(|_| (vec![], false));
-                            if pull.1 {
+                            let (_, found) =
+                                pull_key(read, &block_info).unwrap_or_else(|_| (Vec::new(), false));
+                            if found {
                                 last_found_block_info = block_info;
                                 this_found_index = block_control_index_before + 1;
                                 this_found_finish_index = i + 1;
@@ -524,22 +534,26 @@ fn set_one_data(
     let (new_list_block_data, new_list_block_info) =
         get_new_list_not_contain_key(read, list_block_data, key.clone(), true);
 
-    let len_key = key.len();
-    let len_data = data.len();
-    let block_size = len_key + len_data;
-    let sum_key: u64 = key.iter().map(|&x| x as u64).sum();
-    let sum_md5: u64 = md5::compute(&key).to_vec().iter().map(|&x| x as u64).sum();
+    let size_key = key.len();
+    let size_data = data.len();
+    let block_size = size_key + size_data;
+    let sum_key: usize = key.iter().map(|&x| x as usize).sum();
+    let sum_md5: usize = md5::compute(&key)
+        .to_vec()
+        .iter()
+        .map(|&x| x as usize)
+        .sum();
 
     let list_space = get_list_space(start_list_point, new_list_block_info);
     let (start_list, start_block) = get_perfect_space(list_space, start_list_point, block_size);
     let info_data = push_block_to_data(
-        vec![],
+        Vec::new(),
         &Block {
             start: start_block,
-            size_key: len_key,
-            sum_key: sum_key as usize,
-            sum_md5: sum_md5 as usize,
-            size_data: len_data,
+            size_key,
+            sum_key,
+            sum_md5,
+            size_data,
         },
     );
 
@@ -565,24 +579,28 @@ fn set_many_data(
     {
         let mut max_size_block: usize = 0;
         for i in 0..list_data.len() {
-            let d = list_data[i].clone();
-            let len_key = d.0.len();
-            let len_data = d.1.len();
-            let block_size = len_key + len_data;
+            let (key, data) = list_data[i].clone();
+            let size_key = key.len();
+            let size_data = data.len();
+            let block_size = size_key + size_data;
             if min_size_block == 0 || block_size < min_size_block {
                 min_size_block = block_size;
             }
             if block_size > max_size_block {
                 max_size_block = block_size;
             }
-            let sum_key: u64 = d.0.iter().map(|&x| x as u64).sum();
-            let sum_md5: u64 = md5::compute(&d.0).to_vec().iter().map(|&x| x as u64).sum();
+            let sum_key: usize = key.iter().map(|&x| x as usize).sum();
+            let sum_md5: usize = md5::compute(&key)
+                .to_vec()
+                .iter()
+                .map(|&x| x as usize)
+                .sum();
             list_config_insert.push(Block {
                 start: i,
-                size_key: len_key,
-                sum_key: sum_key as usize,
-                sum_md5: sum_md5 as usize,
-                size_data: len_data,
+                size_key,
+                sum_key,
+                sum_md5,
+                size_data,
             });
         }
 
@@ -615,9 +633,9 @@ fn set_many_data(
                     selected.insert(c.start, true);
                     {
                         let start_block = s.start + this_space_used;
-                        let d = list_data[c.start].clone();
+                        let (key, data) = list_data[c.start].clone();
                         let info_data = push_block_to_data(
-                            vec![],
+                            Vec::new(),
                             &Block {
                                 start: start_block,
                                 size_key: c.size_key,
@@ -626,7 +644,7 @@ fn set_many_data(
                                 size_data: c.size_data,
                             },
                         );
-                        list_write_data.push((start_block, d.0, d.1));
+                        list_write_data.push((start_block, key, data));
                         list_info_data = merge_vec(&[list_info_data, info_data]);
                         this_space_used += block_size;
                     }
@@ -647,9 +665,9 @@ fn set_many_data(
         let block_size = c.size_key + c.size_data;
         let start_block = start_list_block + total_last_space_used;
         selected.insert(c.start, true);
-        let d = list_data[c.start].clone();
+        let (key, data) = list_data[c.start].clone();
         let info_data = push_block_to_data(
-            vec![],
+            Vec::new(),
             &Block {
                 start: start_block,
                 size_key: c.size_key,
@@ -658,7 +676,7 @@ fn set_many_data(
                 size_data: c.size_data,
             },
         );
-        list_write_data.push((start_block, d.0, d.1));
+        list_write_data.push((start_block, key, data));
         list_info_data = merge_vec(&[list_info_data, info_data]);
         total_last_space_used += block_size;
     }
@@ -670,9 +688,9 @@ fn set_many_data(
         new_list_block_data,
     )?;
 
-    for w in list_write_data {
-        write.seek(Start(w.0 as u64))?;
-        write.write_all(&merge_vec(&[w.1, w.2]))?;
+    for (start_block, key, data) in list_write_data {
+        write.seek(Start(start_block as u64))?;
+        write.write_all(&merge_vec(&[key, data]))?;
     }
     Ok(())
 }
@@ -687,8 +705,12 @@ fn get_new_list_not_contain_key(
     let mut new_list_block_info: Vec<Block> = Vec::new();
 
     let len_key = key.len();
-    let sum_key: u64 = key.iter().map(|&x| x as u64).sum();
-    let sum_md5: u64 = md5::compute(&key).to_vec().iter().map(|&x| x as u64).sum();
+    let sum_key: usize = key.iter().map(|&x| x as usize).sum();
+    let sum_md5: usize = md5::compute(&key)
+        .to_vec()
+        .iter()
+        .map(|&x| x as usize)
+        .sum();
 
     let mut block_info = EMPTY_BLOCK;
     let mut tmp_group: Vec<u8> = Vec::new();
@@ -716,12 +738,12 @@ fn get_new_list_not_contain_key(
                 {
                     {
                         if block_info.size_key == len_key
-                            && block_info.sum_key == sum_key as usize
-                            && block_info.sum_md5 == sum_md5 as usize
+                            && block_info.sum_key == sum_key
+                            && block_info.sum_md5 == sum_md5
                         {
-                            let pull =
-                                pull_key(read, &block_info).unwrap_or_else(|_| (vec![], false));
-                            if pull.1 && pull.0 == key {
+                            let (found_key, found) =
+                                pull_key(read, &block_info).unwrap_or_else(|_| (Vec::new(), false));
+                            if found && found_key == key {
                                 continue;
                             }
                         }
@@ -787,17 +809,20 @@ fn get_new_list_not_contain_list_key(
                             }
                             let key = cur_key.clone();
                             let len_key = key.len();
-                            let sum_key: u64 = key.iter().map(|&x| x as u64).sum();
-                            let sum_md5: u64 =
-                                md5::compute(&key).to_vec().iter().map(|&x| x as u64).sum();
+                            let sum_key: usize = key.iter().map(|&x| x as usize).sum();
+                            let sum_md5: usize = md5::compute(&key)
+                                .to_vec()
+                                .iter()
+                                .map(|&x| x as usize)
+                                .sum();
                             {
                                 if block_info.size_key == len_key
-                                    && block_info.sum_key == sum_key as usize
-                                    && block_info.sum_md5 == sum_md5 as usize
+                                    && block_info.sum_key == sum_key
+                                    && block_info.sum_md5 == sum_md5
                                 {
-                                    let pull = pull_key(read, &block_info)
-                                        .unwrap_or_else(|_| (vec![], false));
-                                    if pull.1 && pull.0 == key {
+                                    let (found_key, found) = pull_key(read, &block_info)
+                                        .unwrap_or_else(|_| (Vec::new(), false));
+                                    if found && found_key == key {
                                         is_found_key = true;
                                         list_skip_check.insert(key, true);
                                         break;
@@ -942,7 +967,7 @@ fn get_list_config(read: &mut File) -> Result<(usize, Vec<u8>)> {
     {
         if start_list_point < FIRST_SIZE {
             start_list_point = FIRST_SIZE;
-            list_block_data = vec![];
+            list_block_data = Vec::new();
         } else {
             read.seek(Start(start_list_point as u64))?;
             let size_list = digits_to_number(&size_list_data);
@@ -981,17 +1006,17 @@ mod test_md5 {
 }
 
 impl Trait for Bucket {
-    fn new(file_path: String) -> Self {
-        let read_file = match File::open(&file_path) {
+    fn new(path: String) -> Result<Self> {
+        let read_file = match File::open(&path) {
             Ok(f) => f,
-            Err(_) => File::create(&file_path).unwrap(),
+            Err(_) => File::create(&path)?,
         };
-        let write_file = OpenOptions::new().write(true).open(&file_path).unwrap();
+        let write_file = OpenOptions::new().write(true).open(&path)?;
 
-        Self {
+        Ok(Self {
             read: read_file,
             write: write_file,
-        }
+        })
     }
 
     fn set(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<()> {
@@ -1094,7 +1119,7 @@ mod tests {
 
     fn set_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
@@ -1105,7 +1130,7 @@ mod tests {
 
     fn get_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
@@ -1117,7 +1142,7 @@ mod tests {
 
     fn delete_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let error = bucket.delete(test_key).is_err();
@@ -1127,7 +1152,7 @@ mod tests {
 
     fn set_many_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         // let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let test_value: Vec<u8> = String::from("test data value: 0123456789 abcdefgh").into_bytes();
@@ -1145,7 +1170,7 @@ mod tests {
 
     fn list_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let limit = 10u8;
         let list_block = bucket.list(limit);
@@ -1155,7 +1180,7 @@ mod tests {
 
     fn list_next_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let limit = 10u8;
         let skip = 0usize;
@@ -1166,7 +1191,7 @@ mod tests {
 
     fn find_next_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let limit = 10u8;
@@ -1179,7 +1204,7 @@ mod tests {
 
     fn delete_to_data() {
         let file_path = String::from("data.db");
-        let mut bucket = Bucket::new(file_path);
+        let mut bucket = Bucket::new(file_path).unwrap();
 
         let test_key: Vec<u8> = String::from("test-key-001-99999999999999").into_bytes();
         let also_delete_the_found_block = true;

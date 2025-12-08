@@ -147,21 +147,21 @@ mod test_merge_vec {
     }
 }
 
-fn pull_key(read: &mut File, info: &Block) -> Result<(Vec<u8>, bool)> {
+fn pull_key(read: &mut File, info: &Block) -> Result<Vec<u8>> {
     read.seek(Start(info.start as u64))?;
     let mut found_key = vec![0u8; info.size_key];
     read.read_exact(&mut found_key)?;
-    Ok((found_key, true))
+    Ok(found_key)
 }
 
-fn pull_data(read: &mut File, info: &Block) -> Result<(Vec<u8>, Vec<u8>, bool)> {
+fn pull_data(read: &mut File, info: &Block) -> Result<(Vec<u8>, Vec<u8>)> {
     read.seek(Start(info.start as u64))?;
     let mut found_key = vec![0u8; info.size_key];
     read.read_exact(&mut found_key)?;
     read.seek(Start((info.start + info.size_key) as u64))?;
     let mut found_data = vec![0u8; info.size_data];
     read.read_exact(&mut found_data)?;
-    Ok((found_key, found_data, true))
+    Ok((found_key, found_data))
 }
 
 fn get_one_data(read: &mut File, list_block_data: Vec<u8>, key: Vec<u8>) -> (Vec<u8>, Vec<u8>) {
@@ -203,9 +203,10 @@ fn get_one_data(read: &mut File, list_block_data: Vec<u8>, key: Vec<u8>) -> (Vec
                             && block_info.sum_key == sum_key
                             && block_info.sum_md5 == sum_md5
                         {
-                            let (found_key, found_data, found) = pull_data(read, &block_info)
-                                .unwrap_or_else(|_| (Vec::new(), Vec::new(), false));
-                            if found {
+                            let (found_key, found_data) = pull_data(read, &block_info)
+                                .unwrap_or_else(|_| (Vec::new(), Vec::new()));
+                            if found_key == key && found_data.len() == block_info.size_data {
+                                // success
                                 result.0 = found_key;
                                 result.1 = found_data;
                                 break;
@@ -257,11 +258,25 @@ fn get_list_data(read: &mut File, list_block_data: Vec<u8>, limit: u8) -> Vec<(V
                     block_info.size_data = digits_to_number(&tmp_group);
                     tmp_group.clear();
                     {
-                        let (found_key, found_data, found) = pull_data(read, &block_info)
-                            .unwrap_or_else(|_| (Vec::new(), Vec::new(), false));
-                        if found {
-                            result.push((found_key, found_data));
-                            current += 1;
+                        let (found_key, found_data) = pull_data(read, &block_info)
+                            .unwrap_or_else(|_| (Vec::new(), Vec::new()));
+                        let len_found_key = found_key.len();
+                        if len_found_key == block_info.size_key {
+                            let sum_found_key: usize = found_key.iter().map(|&x| x as usize).sum();
+                            if sum_found_key == block_info.sum_key {
+                                let sum_found_md5: usize = md5::compute(&found_key)
+                                    .to_vec()
+                                    .iter()
+                                    .map(|&x| x as usize)
+                                    .sum();
+                                if sum_found_md5 == block_info.sum_md5
+                                    && found_data.len() == block_info.size_data
+                                {
+                                    // success
+                                    result.push((found_key, found_data));
+                                    current += 1;
+                                }
+                            }
                         }
                     }
                     block_info = EMPTY_BLOCK;
@@ -315,14 +330,28 @@ fn get_list_next_data(
                     block_info.size_data = digits_to_number(&tmp_group);
                     tmp_group.clear();
                     {
-                        let (found_key, found_data, found) = pull_data(read, &block_info)
-                            .unwrap_or_else(|_| (Vec::new(), Vec::new(), false));
-                        if found {
-                            if current_skip < skip {
-                                current_skip += 1;
-                            } else {
-                                result.push((found_key, found_data));
-                                current += 1;
+                        let (found_key, found_data) = pull_data(read, &block_info)
+                            .unwrap_or_else(|_| (Vec::new(), Vec::new()));
+                        let len_found_key = found_key.len();
+                        if len_found_key == block_info.size_key {
+                            let sum_found_key: usize = found_key.iter().map(|&x| x as usize).sum();
+                            if sum_found_key == block_info.sum_key {
+                                let sum_found_md5: usize = md5::compute(&found_key)
+                                    .to_vec()
+                                    .iter()
+                                    .map(|&x| x as usize)
+                                    .sum();
+                                if sum_found_md5 == block_info.sum_md5
+                                    && found_data.len() == block_info.size_data
+                                {
+                                    // success
+                                    if current_skip < skip {
+                                        current_skip += 1;
+                                    } else {
+                                        result.push((found_key, found_data));
+                                        current += 1;
+                                    }
+                                }
                             }
                         }
                     }
@@ -390,18 +419,34 @@ fn get_find_next_data(
                             && block_info.sum_key == sum_current_key
                             && block_info.sum_md5 == sum_current_md5
                         {
-                            let (found_key, found) =
-                                pull_key(read, &block_info).unwrap_or_else(|_| (Vec::new(), false));
-                            check_is_begin = found && found_key == key;
+                            let found_key =
+                                pull_key(read, &block_info).unwrap_or_else(|_| Vec::new());
+                            check_is_begin = found_key == key;
                         }
                         if check_is_begin {
-                            let (found_key, found_data, found) = pull_data(read, &block_info)
-                                .unwrap_or_else(|_| (Vec::new(), Vec::new(), false));
-                            if found {
-                                if !only_after_key || current > 0 {
-                                    result.push((found_key, found_data));
+                            // success
+                            let (found_key, found_data) = pull_data(read, &block_info)
+                                .unwrap_or_else(|_| (Vec::new(), Vec::new()));
+                            let len_found_key = found_key.len();
+                            if len_found_key == block_info.size_key {
+                                let sum_found_key: usize =
+                                    found_key.iter().map(|&x| x as usize).sum();
+                                if sum_found_key == block_info.sum_key {
+                                    let sum_found_md5: usize = md5::compute(&found_key)
+                                        .to_vec()
+                                        .iter()
+                                        .map(|&x| x as usize)
+                                        .sum();
+                                    if sum_found_md5 == block_info.sum_md5
+                                        && found_data.len() == block_info.size_data
+                                    {
+                                        // success
+                                        if !only_after_key || current > 0 {
+                                            result.push((found_key, found_data));
+                                        }
+                                        current += 1;
+                                    }
                                 }
-                                current += 1;
                             }
                         }
                     }
@@ -468,9 +513,10 @@ fn delete_to_data(
                             && block_info.sum_key == sum_current_key
                             && block_info.sum_md5 == sum_current_md5
                         {
-                            let (_, found) =
-                                pull_key(read, &block_info).unwrap_or_else(|_| (Vec::new(), false));
-                            if found {
+                            let found_key =
+                                pull_key(read, &block_info).unwrap_or_else(|_| Vec::new());
+                            if found_key == find_key {
+                                // success
                                 last_found_block_info = block_info;
                                 this_found_index = block_control_index_before + 1;
                                 this_found_finish_index = i + 1;
@@ -741,9 +787,10 @@ fn get_new_list_not_contain_key(
                             && block_info.sum_key == sum_key
                             && block_info.sum_md5 == sum_md5
                         {
-                            let (found_key, found) =
-                                pull_key(read, &block_info).unwrap_or_else(|_| (Vec::new(), false));
-                            if found && found_key == key {
+                            let found_key =
+                                pull_key(read, &block_info).unwrap_or_else(|_| Vec::new());
+                            if found_key == key {
+                                // success
                                 continue;
                             }
                         }
@@ -820,9 +867,10 @@ fn get_new_list_not_contain_list_key(
                                     && block_info.sum_key == sum_key
                                     && block_info.sum_md5 == sum_md5
                                 {
-                                    let (found_key, found) = pull_key(read, &block_info)
-                                        .unwrap_or_else(|_| (Vec::new(), false));
-                                    if found && found_key == key {
+                                    let found_key =
+                                        pull_key(read, &block_info).unwrap_or_else(|_| Vec::new());
+                                    if found_key == key {
+                                        // success
                                         is_found_key = true;
                                         list_skip_check.insert(key, true);
                                         break;

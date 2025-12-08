@@ -205,7 +205,7 @@ fn get_one_data(read: &mut File, list_block_data: Vec<u8>, key: Vec<u8>) -> (Vec
                         {
                             let (found_key, found_data) = pull_data(read, &block_info)
                                 .unwrap_or_else(|_| (Vec::new(), Vec::new()));
-                            if found_key == key && found_data.len() == block_info.size_data {
+                            if found_key == key {
                                 // success
                                 result.0 = found_key;
                                 result.1 = found_data;
@@ -269,9 +269,7 @@ fn get_list_data(read: &mut File, list_block_data: Vec<u8>, limit: u8) -> Vec<(V
                                     .iter()
                                     .map(|&x| x as usize)
                                     .sum();
-                                if sum_found_md5 == block_info.sum_md5
-                                    && found_data.len() == block_info.size_data
-                                {
+                                if sum_found_md5 == block_info.sum_md5 {
                                     // success
                                     result.push((found_key, found_data));
                                     current += 1;
@@ -341,9 +339,7 @@ fn get_list_next_data(
                                     .iter()
                                     .map(|&x| x as usize)
                                     .sum();
-                                if sum_found_md5 == block_info.sum_md5
-                                    && found_data.len() == block_info.size_data
-                                {
+                                if sum_found_md5 == block_info.sum_md5 {
                                     // success
                                     if current_skip < skip {
                                         current_skip += 1;
@@ -437,9 +433,7 @@ fn get_find_next_data(
                                         .iter()
                                         .map(|&x| x as usize)
                                         .sum();
-                                    if sum_found_md5 == block_info.sum_md5
-                                        && found_data.len() == block_info.size_data
-                                    {
+                                    if sum_found_md5 == block_info.sum_md5 {
                                         // success
                                         if !only_after_key || current > 0 {
                                             result.push((found_key, found_data));

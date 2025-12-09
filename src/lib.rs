@@ -158,7 +158,6 @@ fn pull_data(read: &mut File, info: &Block) -> Result<(Vec<u8>, Vec<u8>)> {
     read.seek(Start(info.start as u64))?;
     let mut found_key = vec![0u8; info.size_key];
     read.read_exact(&mut found_key)?;
-    read.seek(Start((info.start + info.size_key) as u64))?;
     let mut found_data = vec![0u8; info.size_data];
     read.read_exact(&mut found_data)?;
     Ok((found_key, found_data))

@@ -1061,7 +1061,7 @@ impl Trait for Bucket {
     }
 
     fn set(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<()> {
-        self.writer.try_lock()?;
+        self.writer.lock()?;
         let (start_list_point, list_block_data) =
             get_list_config(&mut self.reader).unwrap_or_else(|_| (FIRST_SIZE, Vec::new()));
         set_one_data(
@@ -1082,7 +1082,7 @@ impl Trait for Bucket {
     }
 
     fn delete(&mut self, key: Vec<u8>) -> Result<()> {
-        self.writer.try_lock()?;
+        self.writer.lock()?;
         let (start_list_point, list_block_data) =
             get_list_config(&mut self.reader).unwrap_or_else(|_| (FIRST_SIZE, Vec::new()));
         delete_one_data(
@@ -1096,7 +1096,7 @@ impl Trait for Bucket {
     }
 
     fn set_many(&mut self, list_data: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()> {
-        self.writer.try_lock()?;
+        self.writer.lock()?;
         let (start_list_point, list_block_data) =
             get_list_config(&mut self.reader).unwrap_or_else(|_| (FIRST_SIZE, Vec::new()));
         set_many_data(
@@ -1139,7 +1139,7 @@ impl Trait for Bucket {
     }
 
     fn delete_to(&mut self, key: Vec<u8>, also_delete_the_found_block: bool) -> Result<()> {
-        self.writer.try_lock()?;
+        self.writer.lock()?;
         let (start_list_point, list_block_data) =
             get_list_config(&mut self.reader).unwrap_or_else(|_| (FIRST_SIZE, Vec::new()));
         delete_to_data(

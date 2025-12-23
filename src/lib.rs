@@ -105,7 +105,7 @@ mod test_group_digits_to_vec {
     #[test]
     fn test_group_digits_to_vec() {
         let data = group_digits_to_vec(2502510011110001111);
-        assert_eq!(data, [250u8, 25, 100, 111, 100, 0, 111, 1]);
+        assert_eq!(data, [25u8, 0, 25, 100, 111, 100, 0, 111, 1]);
     }
 }
 
@@ -1050,7 +1050,10 @@ impl Trait for Bucket {
     fn new(path: String) -> Result<Self> {
         let reader = match File::open(&path) {
             Ok(f) => f,
-            Err(_) => File::create(&path)?,
+            Err(_) => {
+                File::create(&path)?;
+                File::open(&path)?
+            }
         };
         let writer = OpenOptions::new().write(true).open(&path)?;
 

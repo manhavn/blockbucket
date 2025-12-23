@@ -14,7 +14,7 @@
 
 [dependencies]
 #blockbucket = { git = "https://github.com/manhavn/blockbucket.git" }
-blockbucket = "0.2.1" # https://crates.io/crates/blockbucket
+blockbucket = "0.2.2" # https://crates.io/crates/blockbucket
 ```
 
 - `test.rs`

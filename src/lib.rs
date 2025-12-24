@@ -112,8 +112,14 @@ mod test_group_digits_to_vec {
 fn digits_to_number(digits: &[u8]) -> usize {
     let mut n: usize = 0;
     for &x in digits {
-        let digits_count = if x == 0 { 1 } else { x.ilog10() as usize + 1 };
-        n = n * 10usize.pow(digits_count as u32) + x as usize;
+        let count = if x < 10 {
+            1
+        } else if x < 100 {
+            2
+        } else {
+            3
+        };
+        n = n * 10usize.pow(count) + x as usize;
     }
     n
 }

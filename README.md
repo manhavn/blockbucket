@@ -14,7 +14,7 @@
 
 [dependencies]
 #blockbucket = { git = "https://github.com/manhavn/blockbucket.git" }
-blockbucket = "0.2.3" # https://crates.io/crates/blockbucket
+blockbucket = "0.2.5" # https://crates.io/crates/blockbucket
 ```
 
 - `test.rs`
@@ -141,5 +141,78 @@ mod tests {
         let file_path = String::from("data.db");
         fs::remove_file(file_path).unwrap()
     }
+}
+```
+
+# DEMO queue app
+
+```rust
+use blockbucket::{Bucket, Trait};
+use std::time::{Duration, Instant};
+use std::{fs, thread};
+
+fn main() {
+    thread::spawn(|| {
+        loop {
+            add_queue();
+            thread::sleep(Duration::from_secs(20));
+        }
+    });
+
+    loop {
+        run_queue();
+        thread::sleep(Duration::from_secs(2));
+    }
+}
+
+fn add_queue() {
+    let file_path = String::from("data.db");
+    let mut bucket = Bucket::new(file_path.clone()).unwrap();
+
+    let time_md5 = md5::compute(format!("{:?}", Instant::now().to_owned()));
+    let mut list_data: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+
+    for i in 0..10 {
+        let test_key = format!("test-key-{}-{:x}", i, time_md5).into_bytes();
+        let test_data = format!("test-data-{}-{:x}", i, time_md5).into_bytes();
+        list_data.push((test_key, test_data.clone()));
+    }
+
+    let error = bucket.set_many(list_data).is_err();
+    let bucket_size = match fs::metadata(file_path) {
+        Ok(metadata) => metadata.len(),
+        Err(_) => 0,
+    };
+
+    println!(
+        "Queue added {}, Bucket file size {} bytes",
+        error == false,
+        bucket_size
+    );
+}
+
+fn run_queue() {
+    let file_path = String::from("data.db");
+    let mut bucket = Bucket::new(file_path.clone()).unwrap();
+
+    let limit = 3u8;
+    let list_block = bucket.list(limit);
+
+    let mut end_key: Vec<u8> = Vec::new();
+    for (k, v) in list_block {
+        end_key = k.clone();
+        let key = String::from_utf8(k).unwrap();
+        let value = String::from_utf8(v).unwrap();
+
+        println!("{:?} ==> {:?}", key, value);
+        thread::sleep(Duration::from_millis(500));
+    }
+    bucket.delete_to(end_key, true).unwrap();
+
+    let bucket_size = match fs::metadata(file_path) {
+        Ok(metadata) => metadata.len(),
+        Err(_) => 0,
+    };
+    println!("Bucket file size {} bytes", bucket_size);
 }
 ```

@@ -619,6 +619,7 @@ fn set_many_data(
     let (new_list_block_data, new_list_block_info) =
         get_new_list_not_contain_list_key(read, list_block_data, &list_data, true);
 
+    let mut list_block_insert_position: Vec<String> = Vec::new();
     let mut min_size_block: usize = 0;
     let mut list_config_insert: Vec<Block> = Vec::new();
     {
@@ -647,6 +648,8 @@ fn set_many_data(
                 sum_md5,
                 size_data,
             });
+            list_block_insert_position
+                .push(format!("{}{}{}{}", size_key, sum_key, sum_md5, size_data));
         }
 
         list_config_insert.sort_by(|a, b| {
@@ -661,6 +664,7 @@ fn set_many_data(
     let mut selected: HashMap<usize, bool> = HashMap::new();
     let mut list_write_data: Vec<(usize, Vec<u8>, Vec<u8>)> = Vec::new();
     let mut total_last_space_used: usize = 0;
+    let mut map_block_insert: HashMap<String, Block> = HashMap::new();
 
     {
         let list_space = get_list_space(start_list_point, new_list_block_info);
@@ -679,18 +683,8 @@ fn set_many_data(
                     {
                         let start_block = s.start + this_space_used;
                         let (key, data) = list_data[c.start].clone();
-                        let info_data = push_block_to_data(
-                            Vec::new(),
-                            &Block {
-                                start: start_block,
-                                size_key: c.size_key,
-                                sum_key: c.sum_key,
-                                sum_md5: c.sum_md5,
-                                size_data: c.size_data,
-                            },
-                        );
+                        add_to_map_sort(&mut map_block_insert, c, start_block);
                         list_write_data.push((start_block, key, data));
-                        list_info_data = merge_vec(&[list_info_data, info_data]);
                         this_space_used += block_size;
                     }
                     if s.sum_key == 1 {
@@ -711,19 +705,21 @@ fn set_many_data(
         let start_block = start_list_block + total_last_space_used;
         selected.insert(c.start, true);
         let (key, data) = list_data[c.start].clone();
-        let info_data = push_block_to_data(
-            Vec::new(),
-            &Block {
-                start: start_block,
-                size_key: c.size_key,
-                sum_key: c.sum_key,
-                sum_md5: c.sum_md5,
-                size_data: c.size_data,
-            },
-        );
+        add_to_map_sort(&mut map_block_insert, c, start_block);
         list_write_data.push((start_block, key, data));
-        list_info_data = merge_vec(&[list_info_data, info_data]);
         total_last_space_used += block_size;
+    }
+
+    for key_sort in list_block_insert_position {
+        match map_block_insert.get(&key_sort) {
+            None => {
+                continue;
+            }
+            Some(block) => {
+                let info_data = push_block_to_data(Vec::new(), &block);
+                list_info_data = merge_vec(&[list_info_data, info_data]);
+            }
+        }
     }
 
     let new_list_block_data = merge_vec(&[new_list_block_data, list_info_data]);
@@ -738,6 +734,19 @@ fn set_many_data(
         write.write_all(&merge_vec(&[key, data]))?;
     }
     Ok(())
+}
+
+fn add_to_map_sort(map_block_sort: &mut HashMap<String, Block>, c: Block, start_block: usize) {
+    map_block_sort.insert(
+        format!("{}{}{}{}", c.size_key, c.sum_key, c.sum_md5, c.size_data),
+        Block {
+            start: start_block,
+            size_key: c.size_key,
+            sum_key: c.sum_key,
+            sum_md5: c.sum_md5,
+            size_data: c.size_data,
+        },
+    );
 }
 
 fn get_new_list_not_contain_key(

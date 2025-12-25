@@ -19,6 +19,7 @@ pub trait Trait {
         only_after_key: bool,
     ) -> Vec<(Vec<u8>, Vec<u8>)>;
     fn delete_to(&mut self, key: Vec<u8>, also_delete_the_found_block: bool) -> Result<()>;
+    fn list_lock_delete(&mut self, limit: u8) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
 }
 
 pub struct Bucket {
@@ -296,6 +297,86 @@ fn get_list_data(read: &mut File, list_block_data: Vec<u8>, limit: u8) -> Vec<(V
     result
 }
 
+fn get_list_lock_delete_data(
+    read: &mut File,
+    write: &mut File,
+    start_list_point: usize,
+    list_block_data: Vec<u8>,
+    limit: u8,
+) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+    let mut result: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+    let mut end_key: Vec<u8> = Vec::new();
+    {
+        let mut block_info = EMPTY_BLOCK;
+        let mut tmp_group: Vec<u8> = Vec::new();
+        let mut current: u8 = 0;
+        for v in list_block_data.clone() {
+            if current >= limit {
+                break;
+            }
+            match v {
+                START => {
+                    block_info.start = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SIZE_KEY => {
+                    block_info.size_key = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SUM_KEY => {
+                    block_info.sum_key = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SUM_MD5 => {
+                    block_info.sum_md5 = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                }
+                SIZE_DATA => {
+                    block_info.size_data = digits_to_number(&tmp_group);
+                    tmp_group.clear();
+                    {
+                        let (found_key, found_data) = pull_data(read, &block_info)
+                            .unwrap_or_else(|_| (Vec::new(), Vec::new()));
+                        let len_found_key = found_key.len();
+                        if len_found_key == block_info.size_key {
+                            let sum_found_key: usize = found_key.iter().map(|&x| x as usize).sum();
+                            if sum_found_key == block_info.sum_key {
+                                let sum_found_md5: usize = md5::compute(&found_key)
+                                    .to_vec()
+                                    .iter()
+                                    .map(|&x| x as usize)
+                                    .sum();
+                                if sum_found_md5 == block_info.sum_md5 {
+                                    // success
+                                    end_key = found_key.clone();
+                                    result.push((found_key, found_data));
+                                    current += 1;
+                                }
+                            }
+                        }
+                    }
+                    block_info = EMPTY_BLOCK;
+                }
+                END => {
+                    break;
+                }
+                _ => {
+                    tmp_group.push(v);
+                }
+            }
+        }
+    }
+    delete_to_data(
+        read,
+        write,
+        start_list_point,
+        list_block_data,
+        true,
+        end_key,
+    )?;
+    Ok(result)
+}
+
 fn get_list_next_data(
     read: &mut File,
     list_block_data: Vec<u8>,
@@ -469,7 +550,7 @@ fn delete_to_data(
     start_list_point: usize,
     list_block_data: Vec<u8>,
     also_delete_the_found_block: bool,
-    find_key: Vec<u8>,
+    key: Vec<u8>,
 ) -> Result<()> {
     let mut this_found_index: usize = 0;
     let mut this_found_finish_index: usize = 0;
@@ -478,9 +559,9 @@ fn delete_to_data(
         let mut block_control_index_before: usize = 0;
         let mut block_info = EMPTY_BLOCK;
         let mut tmp_group: Vec<u8> = Vec::new();
-        let len_current_key = find_key.len();
-        let sum_current_key: usize = find_key.iter().map(|&x| x as usize).sum();
-        let sum_current_md5: usize = md5::compute(&find_key)
+        let len_current_key = key.len();
+        let sum_current_key: usize = key.iter().map(|&x| x as usize).sum();
+        let sum_current_md5: usize = md5::compute(&key)
             .to_vec()
             .iter()
             .map(|&x| x as usize)
@@ -514,7 +595,7 @@ fn delete_to_data(
                         {
                             let found_key =
                                 pull_key(read, &block_info).unwrap_or_else(|_| Vec::new());
-                            if found_key == find_key {
+                            if found_key == key {
                                 // success
                                 last_found_block_info = block_info;
                                 this_found_index = block_control_index_before + 1;
@@ -1167,6 +1248,21 @@ impl Trait for Bucket {
         )?;
         self.writer.unlock()
     }
+
+    fn list_lock_delete(&mut self, limit: u8) -> Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        self.reader.lock()?;
+        let (start_list_point, list_block_data) =
+            get_list_config(&mut self.reader).unwrap_or_else(|_| (FIRST_SIZE, Vec::new()));
+        let result = get_list_lock_delete_data(
+            &mut self.reader,
+            &mut self.writer,
+            start_list_point,
+            list_block_data,
+            limit,
+        );
+        self.reader.unlock()?;
+        result
+    }
 }
 
 #[cfg(test)]
@@ -1184,6 +1280,7 @@ mod tests {
         list_next_data();
         find_next_data();
         delete_to_data();
+        get_list_and_delete_list_data();
         delete_bucket();
     }
 
@@ -1284,6 +1381,16 @@ mod tests {
             .is_err();
 
         assert_eq!(error, false);
+    }
+
+    fn get_list_and_delete_list_data() {
+        let file_path = String::from("data.db");
+        let mut bucket = Bucket::new(file_path).unwrap();
+
+        let limit = 10u8;
+        let list_block = bucket.list_lock_delete(limit).unwrap();
+
+        assert_eq!(list_block.len() > 0, true);
     }
 
     fn delete_bucket() {

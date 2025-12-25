@@ -14,7 +14,7 @@
 
 [dependencies]
 #blockbucket = { git = "https://github.com/manhavn/blockbucket.git" }
-blockbucket = "0.2.6" # https://crates.io/crates/blockbucket
+blockbucket = "0.2.7" # https://crates.io/crates/blockbucket
 ```
 
 - `test.rs`
@@ -196,18 +196,19 @@ fn run_queue() {
     let mut bucket = Bucket::new(file_path.clone()).unwrap();
 
     let limit = 3u8;
-    let list_block = bucket.list(limit);
+    // let list_block = bucket.list(limit);
+    let list_block = bucket.list_lock_delete(limit).unwrap();
 
-    let mut end_key: Vec<u8> = Vec::new();
+    // let mut end_key: Vec<u8> = Vec::new();
     for (k, v) in list_block {
-        end_key = k.clone();
+        // end_key = k.clone();
         let key = String::from_utf8(k).unwrap();
         let value = String::from_utf8(v).unwrap();
 
         println!("{:?} ==> {:?}", key, value);
         thread::sleep(Duration::from_millis(500));
     }
-    bucket.delete_to(end_key, true).unwrap();
+    // bucket.delete_to(end_key, true).unwrap();
 
     let bucket_size = match fs::metadata(file_path) {
         Ok(metadata) => metadata.len(),

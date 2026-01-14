@@ -1,23 +1,180 @@
-# SETUP
+# blockbucket
 
-- Github: [https://github.com/manhavn/blockbucket](https://github.com/manhavn/blockbucket)
-- Crate: [https://crates.io/crates/blockbucket](https://crates.io/crates/blockbucket)
+**blockbucket** is a tiny file-backed key-value bucket (binary `Vec<u8>` key/value) with simple operations:
 
-```shell
+- `set` / `get` / `delete`
+- `set_many`
+- `list` / `list_next` (pagination)
+- `find_next`
+- `delete_to`
+- `list_lock_delete` (queue-like pop)
+
+Storage is backed by a **single file** (example: `data.db`).
+
+> ⚠️ Note: This crate is intentionally simple.
+> It is not a transactional database and does not guarantee crash-safety or durability guarantees like a real DB.
+
+---
+
+## Install
+
+```bash
  cargo add blockbucket
 ```
 
-- `Cargo.toml`
+Or:
 
 ```toml
-# ...
-
 [dependencies]
-#blockbucket = { git = "https://github.com/manhavn/blockbucket.git" }
-blockbucket = "0.2.7" # https://crates.io/crates/blockbucket
+blockbucket = "0.2.8"
 ```
 
-- `test.rs`
+---
+
+## Quick start
+
+```rust
+use blockbucket::{Bucket, Trait};
+
+fn main() -> std::io::Result<()> {
+    let mut bucket = Bucket::new("data.db".to_string())?;
+
+    let key = b"test-key-001".to_vec();
+    let value = b"hello blockbucket".to_vec();
+
+    bucket.set(key.clone(), value.clone())?;
+
+    let (k, v) = bucket.get(key.clone());
+    assert_eq!(k, key);
+    assert_eq!(v, value);
+
+    bucket.delete(key)?;
+    Ok(())
+}
+```
+
+---
+
+## Batch write (set_many)
+
+```rust
+use blockbucket::{Bucket, Trait};
+
+fn main() -> std::io::Result<()> {
+    let mut bucket = Bucket::new("data.db".to_string())?;
+
+    let mut items = Vec::new();
+    for i in 0..10 {
+        let key = format!("k{:02}", i).into_bytes();
+        let value = format!("value-{}", i).into_bytes();
+        items.push((key, value));
+    }
+
+    bucket.set_many(items)?;
+    Ok(())
+}
+```
+
+---
+
+## Listing & pagination
+
+list(limit)
+
+```rust
+use blockbucket::{Bucket, Trait};
+
+fn main() {
+    let mut bucket = Bucket::new("data.db".to_string()).unwrap();
+    let rows = bucket.list(10);
+    println!("rows={}", rows.len());
+}
+```
+
+list_next(limit, skip)
+
+```rust
+use blockbucket::{Bucket, Trait};
+
+fn main() {
+    let mut bucket = Bucket::new("data.db".to_string()).unwrap();
+
+    let page1 = bucket.list_next(10, 0);
+    let page2 = bucket.list_next(10, 10);
+
+    println!("page1={}, page2={}", page1.len(), page2.len());
+}
+```
+
+---
+
+## find_next(key, limit, only_after_key)
+
+Find a window of items around a given key:
+
+- `only_after_key = false`: include the found key
+- `only_after_key = true`: return items after the found key
+
+```rust
+use blockbucket::{Bucket, Trait};
+
+fn main() {
+    let mut bucket = Bucket::new("data.db".to_string()).unwrap();
+
+    let rows = bucket.find_next(b"test-key-001".to_vec(), 10, false);
+    println!("found={}", rows.len());
+}
+```
+
+---
+
+## delete_to(key, also_delete_the_found_block)
+
+Delete items up to a key:
+
+- `also_delete_the_found_block = true`: include the key block itself
+- `also_delete_the_found_block = false`: keep the found key and delete items before it
+
+```rust
+use blockbucket::{Bucket, Trait};
+
+fn main() -> std::io::Result<()> {
+    let mut bucket = Bucket::new("data.db".to_string())?;
+    bucket.delete_to(b"test-key-001".to_vec(), true)?;
+    Ok(())
+}
+```
+
+---
+
+## list_lock_delete(limit)
+
+Queue-like behavior: read up to `limit` items and delete them.
+
+```rust
+use blockbucket::{Bucket, Trait};
+
+fn main() -> std::io::Result<()> {
+    let mut bucket = Bucket::new("data.db".to_string())?;
+    let popped = bucket.list_lock_delete(10)?;
+    println!("popped={}", popped.len());
+    Ok(())
+}
+```
+
+---
+
+## Behavior notes
+
+- `get(key)` returns `(Vec::new(), Vec::new())` when key is not found.
+- Keys and values are stored as raw bytes.
+- Operations are file-backed (single file).
+
+---
+
+## Test
+
+`test.rs`
 
 ```rust
 #[cfg(test)]
@@ -144,7 +301,9 @@ mod tests {
 }
 ```
 
-# DEMO queue app
+---
+
+## DEMO queue app
 
 ```rust
 use blockbucket::{Bucket, Trait};

@@ -1,29 +1,132 @@
+//! # blockbucket
+//!
+//! A tiny file-backed key-value bucket (binary `Vec<u8>` key/value) with simple operations.
+//!
+//! **Supported operations**
+//! - `set` / `get` / `delete`
+//! - `set_many`
+//! - `list` / `list_next` (pagination)
+//! - `find_next`
+//! - `delete_to`
+//! - `list_lock_delete` (queue-like pop)
+//!
+//! The storage is backed by a **single file** (example: `data.db`).
+//!
+//! > ⚠️ Note: This crate is intentionally simple.
+//! > It is not a transactional database and does not guarantee strong crash-safety or durability.
+//!
+//! ## Quick start
+//! ```no_run
+//! use blockbucket::{Bucket, Trait};
+//!
+//! fn main() -> std::io::Result<()> {
+//!     let mut bucket = Bucket::new("data.db".to_string())?;
+//!
+//!     let key = b"test-key-001".to_vec();
+//!     let value = b"hello blockbucket".to_vec();
+//!
+//!     bucket.set(key.clone(), value.clone())?;
+//!
+//!     let (k, v) = bucket.get(key.clone());
+//!     assert_eq!(k, key);
+//!     assert_eq!(v, value);
+//!
+//!     bucket.delete(key)?;
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Queue-like usage
+//! ```no_run
+//! use blockbucket::{Bucket, Trait};
+//!
+//! fn main() -> std::io::Result<()> {
+//!     let mut bucket = Bucket::new("data.db".to_string())?;
+//!     let popped = bucket.list_lock_delete(10)?;
+//!     println!("popped={}", popped.len());
+//!     Ok(())
+//! }
+//! ```
+//!
+//! ## Behavior notes
+//! - `get(key)` returns `(Vec::new(), Vec::new())` if the key does not exist.
+//! - Keys and values are stored as raw bytes (`Vec<u8>`).
+//!
+
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Result, Seek, SeekFrom::Start, Write};
 
+/// Public API implemented by [`Bucket`].
+///
+/// The API is intentionally minimal and uses raw bytes for keys and values.
 pub trait Trait {
+    /// Open a bucket at `path`.
+    ///
+    /// Creates the file if it doesn't exist.
     fn new(path: String) -> Result<Self>
     where
         Self: Sized;
+
+    /// Insert or update a key/value pair.
     fn set(&mut self, key: Vec<u8>, data: Vec<u8>) -> Result<()>;
+
+    /// Get a value by key.
+    ///
+    /// Returns `(Vec::new(), Vec::new())` if the key is not found.
     fn get(&mut self, key: Vec<u8>) -> (Vec<u8>, Vec<u8>);
+
+    /// Delete an entry by key.
     fn delete(&mut self, key: Vec<u8>) -> Result<()>;
+
+    /// Insert multiple items in one call.
     fn set_many(&mut self, list_data: Vec<(Vec<u8>, Vec<u8>)>) -> Result<()>;
+
+    /// List up to `limit` items.
     fn list(&mut self, limit: u8) -> Vec<(Vec<u8>, Vec<u8>)>;
+
+    /// Pagination helper: skip `skip` items and return up to `limit` items.
     fn list_next(&mut self, limit: u8, skip: usize) -> Vec<(Vec<u8>, Vec<u8>)>;
+
+    /// Find a window of items around `key`.
+    ///
+    /// - `only_after_key = false`: include the found key (if exists)
+    /// - `only_after_key = true`: return items after the found key
     fn find_next(
         &mut self,
         key: Vec<u8>,
         limit: u8,
         only_after_key: bool,
     ) -> Vec<(Vec<u8>, Vec<u8>)>;
+
+    /// Delete items up to a key.
+    ///
+    /// - `also_delete_the_found_block = true`: include the found key in deletion
+    /// - `also_delete_the_found_block = false`: keep the found key and delete items before it
     fn delete_to(&mut self, key: Vec<u8>, also_delete_the_found_block: bool) -> Result<()>;
+
+    /// Read up to `limit` items and delete them (queue-like).
     fn list_lock_delete(&mut self, limit: u8) -> Result<Vec<(Vec<u8>, Vec<u8>)>>;
 }
 
+/// File-backed bucket storage.
+///
+/// This struct keeps **two independent file handles**:
+/// - `reader`: used for read/scan operations (list, get, find_next…)
+/// - `writer`: used for write operations (set, delete…)
+///
+/// Having separate handles helps avoid seek conflicts when reading and writing
+/// in the same process.
+///
+/// This design makes it easier to:
+/// - read sequentially while writes happen
+/// - avoid frequent seek jumps on a single handle
+/// - keep the code simple (no locking strategy inside the crate)
 pub struct Bucket {
+    /// File handle for read operations (scan / list / get).
     pub(crate) reader: File,
+
+    /// File handle for write operations (append / update / delete).
     pub(crate) writer: File,
 }
 
